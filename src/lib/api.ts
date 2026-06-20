@@ -184,6 +184,8 @@ export const invoicesApi = {
 export const taxApi = {
   declarations: (params?: ListParams) =>
     api.get<unknown, ListResponse<TaxDeclaration>>('/tax/declarations', { params }),
+  getDeclaration: (id: string) =>
+    api.get<unknown, TaxDeclaration>('/tax/declarations/' + id),
 };
 
 export interface ReviewWarningPayload {

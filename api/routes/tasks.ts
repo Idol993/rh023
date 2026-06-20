@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { tasks, jobPosts, generateId, findById, riskFlags } from '../data/mockData.js';
 import { getUserFromToken } from './auth.js';
-import type { CheckIn, TaskSubmission, RiskFlag } from '../../shared/types.js';
+import type { CheckIn, TaskSubmission, RiskFlag, TaskRiskSummary } from '../../shared/types.js';
 
 const router = Router();
 
@@ -28,7 +28,12 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
     const sizeNum = parseInt(String(pageSize), 10);
     const start = (pageNum - 1) * sizeNum;
     const end = start + sizeNum;
-    const paginated = filtered.slice(start, end);
+    const listWithRisk = filtered.map((task) => ({
+      ...task,
+      ...calculateTaskRiskSummary(task),
+    }));
+
+    const paginated = listWithRisk.slice(start, end);
 
     res.status(200).json({
       success: true,
@@ -59,11 +64,13 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     }
 
     const job = findById(jobPosts, task.jobId);
+    const riskSummary = calculateTaskRiskSummary(task);
 
     res.status(200).json({
       success: true,
       data: {
         ...task,
+        ...riskSummary,
         job,
       },
     });
@@ -74,6 +81,33 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     });
   }
 });
+
+const calculateTaskRiskSummary = (task: { riskFlags: string[] }): TaskRiskSummary => {
+  const activeRisks: RiskFlag[] = [];
+  for (const rfId of task.riskFlags) {
+    const rf = findById(riskFlags, rfId);
+    if (rf && (rf.status === 'pending' || rf.status === 'reviewing')) {
+      activeRisks.push(rf);
+    }
+  }
+
+  let riskLevel: 'none' | 'low' | 'medium' | 'high' = 'none';
+  if (activeRisks.length > 0) {
+    riskLevel = 'low';
+    if (activeRisks.some((r) => r.level === 'medium')) {
+      riskLevel = 'medium';
+    }
+    if (activeRisks.some((r) => r.level === 'high')) {
+      riskLevel = 'high';
+    }
+  }
+
+  return {
+    hasActiveRisk: activeRisks.length > 0,
+    riskLevel,
+    activeRiskCount: activeRisks.length,
+  };
+};
 
 const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
   const R = 6371;
@@ -172,9 +206,6 @@ router.post('/:id/checkin', async (req: Request, res: Response): Promise<void> =
       riskFlags.push(riskFlag);
       if (!task.riskFlags.includes(riskFlag.id)) {
         task.riskFlags.push(riskFlag.id);
-      }
-      if (task.status === 'in_progress') {
-        task.status = 'abnormal';
       }
       triggeredRiskFlagIds.push(riskFlag.id);
       locationAbnormal = true;
@@ -279,8 +310,14 @@ router.post('/:id/checkin', async (req: Request, res: Response): Promise<void> =
 
     task.checkIns.push(checkIn);
 
-    if (task.status === 'pending' && type === 'checkin') {
-      task.status = 'in_progress';
+    if (triggeredRiskFlagIds.length > 0) {
+      if (task.status === 'pending' || task.status === 'in_progress') {
+        task.status = 'abnormal';
+      }
+    } else {
+      if (task.status === 'pending' && type === 'checkin') {
+        task.status = 'in_progress';
+      }
     }
 
     res.status(201).json({

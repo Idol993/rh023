@@ -17,6 +17,10 @@ import type {
   TaxDeclarationFullDetail,
   SettlementSummary,
   TaxCertificate,
+  FailedSettlement,
+  FailedPayout,
+  Payout,
+  Invoice,
 } from '../../shared/types.js';
 
 const router = Router();
@@ -107,6 +111,47 @@ const generateTaxDeclarations = (): void => {
         const relatedInvoices = invoices.filter((inv) => settlementIds.includes(inv.settlementId));
         const relatedPayouts = payouts.filter((p) => settlementIds.includes(p.settlementId));
 
+        const failedCount = periodSettlements.filter((s) => s.status === 'failed').length;
+        const pendingCount = periodSettlements.filter((s) => s.status === 'pending').length;
+        const paidCount = periodSettlements.filter((s) => s.status === 'paid').length;
+        const payoutFailedCount = relatedPayouts.filter((p) => p.status === 'failed').length;
+        const allPaid = periodSettlements.every((s) => s.status === 'paid');
+        const allPayoutSuccess = relatedPayouts.length > 0 && relatedPayouts.every((p) => p.status === 'success');
+
+        let status: TaxDeclaration['status'] = 'draft';
+        let failReason: string | undefined;
+        let failedSettlementCount: number | undefined;
+        let failedPayoutCount: number | undefined;
+        let latestFailTime: string | undefined;
+
+        if (failedCount > 0 || payoutFailedCount > 0) {
+          status = 'failed';
+          failReason = `存在 ${failedCount + payoutFailedCount} 笔失败记录`;
+          failedSettlementCount = failedCount;
+          failedPayoutCount = payoutFailedCount;
+
+          const failTimes: string[] = [];
+          periodSettlements
+            .filter((s) => s.status === 'failed')
+            .forEach((s) => {
+              if (s.confirmedAt) failTimes.push(s.confirmedAt);
+            });
+          relatedPayouts
+            .filter((p) => p.status === 'failed')
+            .forEach((p) => {
+              if (p.paidAt) failTimes.push(p.paidAt);
+            });
+          if (failTimes.length > 0) {
+            latestFailTime = failTimes.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+          }
+        } else if (pendingCount > 0) {
+          status = 'draft';
+        } else if (allPaid && allPayoutSuccess) {
+          status = 'pending';
+        } else if (allPaid) {
+          status = 'pending';
+        }
+
         const newDecl: TaxDeclaration = {
           id: generateId('TAX'),
           period,
@@ -119,7 +164,11 @@ const generateTaxDeclarations = (): void => {
           totalDeductions: periodSettlements.length * 800,
           totalTax: periodSettlements.reduce((sum, s) => sum + s.taxAmount, 0),
           declarationCount: workerIds.length,
-          status: periodSettlements.every((s) => s.status === 'paid') ? 'pending' : 'draft',
+          status,
+          failReason,
+          failedSettlementCount,
+          failedPayoutCount,
+          latestFailTime,
         };
         taxDeclarations.push(newDecl);
       }
@@ -161,6 +210,18 @@ router.get('/declarations', async (req: Request, res: Response): Promise<void> =
 
     const enriched = paginated.map(enrichDeclaration);
 
+    const draftList = filtered.filter((d) => d.status === 'draft');
+    const pendingList = filtered.filter((d) => d.status === 'pending');
+    const declaredList = filtered.filter((d) => d.status === 'declared');
+    const filedList = filtered.filter((d) => d.status === 'filed');
+    const failedList = filtered.filter((d) => d.status === 'failed');
+
+    const sumByList = (list: TaxDeclaration[]) => ({
+      count: list.length,
+      totalTaxableIncome: list.reduce((sum, d) => sum + d.totalTaxableIncome, 0),
+      totalTax: list.reduce((sum, d) => sum + d.totalTax, 0),
+    });
+
     res.status(200).json({
       success: true,
       data: {
@@ -171,11 +232,20 @@ router.get('/declarations', async (req: Request, res: Response): Promise<void> =
         totalPages: Math.ceil(filtered.length / sizeNum),
         summary: {
           total: filtered.length,
-          pending: filtered.filter((d) => d.status === 'pending').length,
-          declared: filtered.filter((d) => d.status === 'declared').length,
-          filed: filtered.filter((d) => d.status === 'filed').length,
+          draft: draftList.length,
+          pending: pendingList.length,
+          declared: declaredList.length,
+          filed: filedList.length,
+          failed: failedList.length,
           totalTaxableIncome: filtered.reduce((sum, d) => sum + d.totalTaxableIncome, 0),
           totalTaxAmount: filtered.reduce((sum, d) => sum + d.totalTax, 0),
+          byStatus: {
+            draft: sumByList(draftList),
+            pending: sumByList(pendingList),
+            declared: sumByList(declaredList),
+            filed: sumByList(filedList),
+            failed: sumByList(failedList),
+          },
         },
       },
     });
@@ -219,11 +289,71 @@ router.get('/declarations/:id', async (req: Request, res: Response): Promise<voi
       };
     });
 
+    let failedSettlements: FailedSettlement[] | undefined;
+    let failedPayouts: FailedPayout[] | undefined;
+    let failedInvoices: Invoice[] | undefined;
+    let failureAnalysis: string | undefined;
+
+    if (declaration.status === 'failed') {
+      const failedSettlementList = periodSettlements.filter((s) => s.status === 'failed');
+      failedSettlements = failedSettlementList.map((s) => {
+        const worker = findById(users, s.workerId);
+        return {
+          id: s.id,
+          workerName: worker?.name,
+          workerId: s.workerId,
+          totalBeforeTax: s.totalBeforeTax,
+          taxAmount: s.taxAmount,
+          netAmount: s.netAmount,
+          status: s.status,
+        };
+      });
+
+      const failedPayoutList = periodPayouts.filter((p) => p.status === 'failed');
+      failedPayouts = failedPayoutList.map((p) => {
+        const s = findById(settlements, p.settlementId);
+        const worker = s ? findById(users, s.workerId) : undefined;
+        return {
+          id: p.id,
+          settlementId: p.settlementId,
+          workerName: worker?.name,
+          amount: p.amount,
+          bankAccount: p.bankAccount,
+          bankName: p.bankName,
+          accountName: p.accountName,
+          failReason: p.failReason,
+          retryCount: p.retryCount,
+          status: p.status,
+        };
+      });
+
+      const failedSettlementIds = failedSettlementList.map((s) => s.id);
+      const failedPayoutSettlementIds = failedPayoutList.map((p) => p.settlementId);
+      const allFailedSettlementIds = [...new Set([...failedSettlementIds, ...failedPayoutSettlementIds])];
+      failedInvoices = periodInvoices.filter((i) => allFailedSettlementIds.includes(i.settlementId));
+
+      const failReasonCounts: Record<string, number> = {};
+      failedPayouts.forEach((p) => {
+        const reason = p.failReason || '未知原因';
+        failReasonCounts[reason] = (failReasonCounts[reason] || 0) + 1;
+      });
+      if (failedSettlementList.length > 0) {
+        failReasonCounts['结算失败'] = (failReasonCounts['结算失败'] || 0) + failedSettlementList.length;
+      }
+      failureAnalysis = Object.entries(failReasonCounts)
+        .map(([reason, count]) => `${reason} ${count}笔`)
+        .join('，');
+    }
+
     const fullDetail: TaxDeclarationFullDetail = {
       ...enriched,
       settlements: settlementSummaries,
       invoices: periodInvoices,
       payouts: periodPayouts,
+      failedSettlements,
+      failedPayouts,
+      failedInvoices,
+      failureAnalysis,
     };
 
     res.status(200).json({

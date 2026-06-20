@@ -113,6 +113,14 @@ export interface TaskSubmission {
   submittedAt: string;
 }
 
+export type RiskLevel = 'none' | 'low' | 'medium' | 'high';
+
+export interface TaskRiskSummary {
+  hasActiveRisk: boolean;
+  riskLevel: RiskLevel;
+  activeRiskCount: number;
+}
+
 export interface Task {
   id: string;
   jobId: string;
@@ -127,6 +135,8 @@ export interface Task {
   reviewComment?: string;
   riskFlags: string[];
 }
+
+export interface TaskWithRiskSummary extends Task, TaskRiskSummary {}
 
 export interface SettlementItem {
   id: string;
@@ -220,6 +230,9 @@ export interface TaxDeclaration {
   filedAt?: string;
   declarationNo?: string;
   failReason?: string;
+  failedSettlementCount?: number;
+  failedPayoutCount?: number;
+  latestFailTime?: string;
 }
 
 export interface WorkerTaxDetail {
@@ -273,10 +286,37 @@ export interface SettlementSummary {
   confirmedAt?: string;
 }
 
+export interface FailedSettlement {
+  id: string;
+  workerName?: string;
+  workerId: string;
+  totalBeforeTax: number;
+  taxAmount: number;
+  netAmount: number;
+  status: string;
+}
+
+export interface FailedPayout {
+  id: string;
+  settlementId: string;
+  workerName?: string;
+  amount: number;
+  bankAccount: string;
+  bankName: string;
+  accountName: string;
+  failReason?: string;
+  retryCount: number;
+  status: string;
+}
+
 export interface TaxDeclarationFullDetail extends TaxDeclarationWithDetails {
   settlements: SettlementSummary[];
   invoices: Invoice[];
   payouts: Payout[];
+  failedSettlements?: FailedSettlement[];
+  failedPayouts?: FailedPayout[];
+  failedInvoices?: Invoice[];
+  failureAnalysis?: string;
 }
 
 export interface TaxCertificate {

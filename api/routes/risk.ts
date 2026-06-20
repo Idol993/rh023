@@ -193,13 +193,22 @@ router.post('/warnings/:id/review', async (req: Request, res: Response): Promise
         warning.reviewerId = reviewerIdToUse;
         warning.reviewComment = comment || '';
 
-        if (task && task.status === 'abnormal') {
+        let message = '风控已解除，仍有其他预警，任务保持异常';
+
+        if (task) {
           const hasOtherActiveRisk = task.riskFlags.some((rfId) => {
             const rf = findById(riskFlags, rfId);
             return rf && rf.id !== warning.id && (rf.status === 'pending' || rf.status === 'reviewing');
           });
+
           if (!hasOtherActiveRisk) {
-            task.status = 'in_progress';
+            if (task.status === 'abnormal') {
+              task.status = 'in_progress';
+              message = '风控已解除，任务已恢复为进行中';
+            } else if (task.status === 'pending' && task.checkIns.length > 0) {
+              task.status = 'in_progress';
+              message = '风控已解除，任务已恢复为进行中';
+            }
           }
         }
 
@@ -208,8 +217,9 @@ router.post('/warnings/:id/review', async (req: Request, res: Response): Promise
           data: {
             ...warning,
             reviewerName: reviewer?.name,
+            taskStatus: task?.status,
           },
-          message: '风控已解除，任务已恢复',
+          message,
         });
         break;
       }
@@ -219,10 +229,17 @@ router.post('/warnings/:id/review', async (req: Request, res: Response): Promise
         warning.reviewerId = reviewerIdToUse;
         warning.reviewComment = comment || '';
 
+        let settlementSuspended = false;
+
         if (task) {
+          if (task.status === 'pending' || task.status === 'in_progress') {
+            task.status = 'abnormal';
+          }
+
           const relatedSettlement = settlements.find((s) => s.taskId === task.id);
           if (relatedSettlement && relatedSettlement.status !== 'paid') {
             relatedSettlement.status = 'pending';
+            settlementSuspended = true;
           }
         }
 
@@ -231,8 +248,12 @@ router.post('/warnings/:id/review', async (req: Request, res: Response): Promise
           data: {
             ...warning,
             reviewerName: reviewer?.name,
+            taskStatus: task?.status,
+            settlementSuspended,
           },
-          message: '风控已确认，已暂停结算，请人工介入',
+          message: settlementSuspended
+            ? '已确认风险，任务保持异常状态，结算已暂停'
+            : '已确认风险，任务保持异常状态',
         });
         break;
       }

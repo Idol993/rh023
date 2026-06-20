@@ -40,7 +40,7 @@ import Modal from '../../components/ui/Modal';
 import FormField from '../../components/ui/FormField';
 import ProgressBar from '../../components/ui/ProgressBar';
 import EmptyState from '../../components/ui/EmptyState';
-import { formatCurrency, formatDate, formatDateOnly, maskIdCard, cn } from '../../utils/format';
+import { formatCurrency, formatDate, formatDateOnly, maskIdCard, maskBankCard, cn, truncateText } from '../../utils/format';
 import type { TaxDeclaration } from '../../../shared/types';
 
 interface DeclarationDetail {
@@ -53,6 +53,29 @@ interface DeclarationDetail {
   taxRate: number;
   quickDeduction: number;
   taxAmount: number;
+}
+
+interface FailedSettlement {
+  id: string;
+  workerName?: string;
+  workerId: string;
+  totalBeforeTax: number;
+  taxAmount: number;
+  netAmount: number;
+  status: string;
+}
+
+interface FailedPayout {
+  id: string;
+  settlementId: string;
+  workerName?: string;
+  amount: number;
+  bankAccount: string;
+  bankName: string;
+  accountName: string;
+  failReason?: string;
+  retryCount: number;
+  status: string;
 }
 
 interface DeclarationExt {
@@ -76,6 +99,10 @@ interface DeclarationExt {
   paidAt?: string;
   deadline: string;
   details: DeclarationDetail[];
+  failReason?: string;
+  failedSettlements?: FailedSettlement[];
+  failedPayouts?: FailedPayout[];
+  failureAnalysis?: string;
 }
 
 const mockDeclarations: DeclarationExt[] = [
@@ -197,11 +224,25 @@ const mockDeclarations: DeclarationExt[] = [
     paidTaxAmount: 38535,
     unpaidTaxAmount: 1000,
     status: 'failed',
+    failReason: '部分发放失败，存在银行卡信息错误或账户异常，请核实后重试',
     declaredAt: '2026-05-08T13:00:00Z',
     deadline: '2026-05-15',
     details: [
       { id: 'd13', workerName: '杨十五', idCard: '500105199105053456', totalIncome: 13200, deductions: 3700, taxableIncome: 9500, taxRate: 0.1, quickDeduction: 210, taxAmount: 740 },
     ],
+    failedSettlements: [
+      { id: 'set-fail-001', workerName: '王小明', workerId: 'w001', totalBeforeTax: 8500, taxAmount: 420, netAmount: 8080, status: 'failed' },
+      { id: 'set-fail-002', workerName: '李华', workerId: 'w002', totalBeforeTax: 12000, taxAmount: 690, netAmount: 11310, status: 'failed' },
+      { id: 'set-fail-003', workerName: '张伟', workerId: 'w003', totalBeforeTax: 6800, taxAmount: 300, netAmount: 6500, status: 'failed' },
+    ],
+    failedPayouts: [
+      { id: 'pay-fail-001', settlementId: 'set-fail-001', workerName: '王小明', amount: 8080, bankAccount: '6222021234567890123', bankName: '中国工商银行', accountName: '王小明', failReason: '银行卡号错误', retryCount: 2, status: 'failed' },
+      { id: 'pay-fail-002', settlementId: 'set-fail-002', workerName: '李华', amount: 11310, bankAccount: '6217009876543210987', bankName: '中国建设银行', accountName: '李华', failReason: '账户已冻结', retryCount: 1, status: 'failed' },
+      { id: 'pay-fail-003', settlementId: 'set-fail-003', workerName: '张伟', amount: 6500, bankAccount: '6228481122334455667', bankName: '中国农业银行', accountName: '张伟', failReason: '银行卡号错误', retryCount: 3, status: 'failed' },
+      { id: 'pay-fail-004', settlementId: 'set-fail-004', workerName: '刘芳', amount: 9200, bankAccount: '6216612233445566778', bankName: '中国银行', accountName: '刘芳', failReason: '账户不存在', retryCount: 1, status: 'failed' },
+      { id: 'pay-fail-005', settlementId: 'set-fail-005', workerName: '陈强', amount: 7500, bankAccount: '6222025566778899001', bankName: '中国工商银行', accountName: '陈强', failReason: '银行卡号错误', retryCount: 2, status: 'failed' },
+    ],
+    failureAnalysis: '银行卡号错误 3笔，账户已冻结 1笔，账户不存在 1笔',
   },
   {
     id: 'tax-decl-202608',
@@ -410,6 +451,123 @@ export default function Declaration() {
     },
   ];
 
+  const failedPayoutColumns: Column<FailedPayout>[] = [
+    {
+      key: 'index',
+      title: '序号',
+      width: 'w-16',
+      align: 'center',
+      render: (_, index) => <span className="text-gray-500">{index + 1}</span>,
+    },
+    {
+      key: 'workerName',
+      title: '收款人',
+      width: 'w-28',
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-red-400 to-rose-500 flex items-center justify-center text-white text-xs font-medium">
+            {(row.workerName || 'U').charAt(0)}
+          </div>
+          <span className="font-medium text-gray-900">{row.workerName}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'bankAccount',
+      title: '银行卡号',
+      width: 'w-44',
+      render: (row) => <span className="font-mono text-sm text-gray-600">{maskBankCard(row.bankAccount)}</span>,
+    },
+    {
+      key: 'bankName',
+      title: '银行名称',
+      width: 'w-36',
+      render: (row) => <span className="text-gray-700">{row.bankName}</span>,
+    },
+    {
+      key: 'amount',
+      title: '金额',
+      width: 'w-32',
+      align: 'right',
+      render: (row) => <span className="font-semibold text-gray-900">{formatCurrency(row.amount)}</span>,
+    },
+    {
+      key: 'failReason',
+      title: '失败原因',
+      width: 'w-40',
+      render: (row) => (
+        <Badge variant="danger" className="text-xs">
+          {row.failReason || '未知原因'}
+        </Badge>
+      ),
+    },
+    {
+      key: 'retryCount',
+      title: '重试次数',
+      width: 'w-24',
+      align: 'center',
+      render: (row) => (
+        <span className={cn(
+          'font-medium',
+          row.retryCount >= 3 ? 'text-red-600' : row.retryCount >= 2 ? 'text-amber-600' : 'text-gray-600'
+        )}>
+          {row.retryCount} 次
+        </span>
+      ),
+    },
+  ];
+
+  const failedSettlementColumns: Column<FailedSettlement>[] = [
+    {
+      key: 'index',
+      title: '序号',
+      width: 'w-16',
+      align: 'center',
+      render: (_, index) => <span className="text-gray-500">{index + 1}</span>,
+    },
+    {
+      key: 'workerName',
+      title: '员工姓名',
+      width: 'w-32',
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white text-xs font-medium">
+            {(row.workerName || 'U').charAt(0)}
+          </div>
+          <span className="font-medium text-gray-900">{row.workerName}</span>
+        </div>
+      ),
+    },
+    {
+      key: 'totalBeforeTax',
+      title: '税前金额',
+      width: 'w-32',
+      align: 'right',
+      render: (row) => <span className="text-gray-700">{formatCurrency(row.totalBeforeTax)}</span>,
+    },
+    {
+      key: 'taxAmount',
+      title: '个税',
+      width: 'w-28',
+      align: 'right',
+      render: (row) => <span className="text-red-600">{formatCurrency(row.taxAmount)}</span>,
+    },
+    {
+      key: 'netAmount',
+      title: '税后金额',
+      width: 'w-32',
+      align: 'right',
+      render: (row) => <span className="font-semibold text-emerald-600">{formatCurrency(row.netAmount)}</span>,
+    },
+    {
+      key: 'status',
+      title: '状态',
+      width: 'w-28',
+      align: 'center',
+      render: () => <Badge variant="danger">结算失败</Badge>,
+    },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -575,7 +733,10 @@ export default function Declaration() {
             return (
               <div
                 key={decl.id}
-                className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden hover:shadow-md transition-shadow"
+                className={cn(
+                  'rounded-2xl border bg-white shadow-sm overflow-hidden hover:shadow-md transition-shadow',
+                  decl.status === 'failed' ? 'border-red-300 ring-1 ring-red-100' : 'border-gray-200'
+                )}
               >
                 <div className="p-6">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -617,6 +778,27 @@ export default function Declaration() {
                             </span>
                           )}
                         </div>
+                        {decl.status === 'failed' && decl.failReason && (
+                          <div className="mt-3 p-3 rounded-xl bg-red-50 border border-red-100">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-red-800">失败原因</p>
+                                <p className="text-sm text-red-600 mt-0.5">
+                                  {truncateText(decl.failReason, 30)}
+                                  {decl.failReason.length > 30 && (
+                                    <button
+                                      onClick={() => handleViewDetails(decl)}
+                                      className="ml-1 text-red-500 hover:text-red-700 underline"
+                                    >
+                                      查看详情
+                                    </button>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                           <div className="flex items-center gap-1.5 text-gray-500">
                             <Building2 className="h-3.5 w-3.5 text-gray-400" />
@@ -831,6 +1013,55 @@ export default function Declaration() {
               </div>
             </div>
 
+            {selectedDeclaration.status === 'failed' && (
+              <div className="rounded-2xl border border-red-200 bg-gradient-to-br from-red-50 via-rose-50 to-red-50 p-6 shadow-sm">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                    <AlertTriangle className="h-6 w-6 text-red-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg font-bold text-red-900">申报失败</h3>
+                      <Badge variant="danger">缴纳异常</Badge>
+                    </div>
+                    <p className="mt-2 text-sm text-red-700 font-medium">
+                      {selectedDeclaration.failureAnalysis || '存在发放失败记录，请核实后重试'}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-4 text-sm">
+                      <span className="inline-flex items-center gap-1.5 text-red-700">
+                        <X className="h-4 w-4" />
+                        结算失败 <b className="text-red-900">{selectedDeclaration.failedSettlements?.length || 0}</b> 笔
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-red-700">
+                        <X className="h-4 w-4" />
+                        发放失败 <b className="text-red-900">{selectedDeclaration.failedPayouts?.length || 0}</b> 笔
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 pt-4 border-t border-red-200/60">
+                  <h4 className="text-sm font-semibold text-red-900 mb-2 flex items-center gap-2">
+                    <Shield className="h-4 w-4" />
+                    操作建议
+                  </h4>
+                  <ul className="space-y-1.5 text-sm text-red-700">
+                    <li className="flex items-start gap-2">
+                      <span className="text-red-500 mt-0.5">•</span>
+                      请修正银行卡信息后重新发起发放
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-red-500 mt-0.5">•</span>
+                      请联系财务核实结算状态
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-red-500 mt-0.5">•</span>
+                      确认账户状态正常后可批量重试发放
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="p-5 rounded-xl border border-gray-200 bg-white">
                 <h4 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-2">
@@ -892,6 +1123,52 @@ export default function Declaration() {
                 </div>
               </div>
             </div>
+
+            {selectedDeclaration.status === 'failed' && selectedDeclaration.failedPayouts && selectedDeclaration.failedPayouts.length > 0 && (
+              <div className="rounded-xl border border-red-200 bg-white overflow-hidden">
+                <div className="p-5 border-b border-red-100 bg-red-50/50 flex items-center justify-between">
+                  <h4 className="text-sm font-semibold text-red-900 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-red-500" />
+                    失败发放记录
+                  </h4>
+                  <span className="text-xs text-red-600 bg-red-100 px-2.5 py-1 rounded-lg font-medium">
+                    共 {selectedDeclaration.failedPayouts.length} 条失败记录
+                  </span>
+                </div>
+                <div className="max-h-[320px] overflow-y-auto">
+                  <Table
+                    columns={failedPayoutColumns}
+                    data={selectedDeclaration.failedPayouts}
+                    rowKey="id"
+                    hoverable
+                    striped
+                  />
+                </div>
+              </div>
+            )}
+
+            {selectedDeclaration.status === 'failed' && selectedDeclaration.failedSettlements && selectedDeclaration.failedSettlements.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-white overflow-hidden">
+                <div className="p-5 border-b border-amber-100 bg-amber-50/50 flex items-center justify-between">
+                  <h4 className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-amber-500" />
+                    对应失败结算单
+                  </h4>
+                  <span className="text-xs text-amber-600 bg-amber-100 px-2.5 py-1 rounded-lg font-medium">
+                    共 {selectedDeclaration.failedSettlements.length} 笔
+                  </span>
+                </div>
+                <div className="max-h-[280px] overflow-y-auto">
+                  <Table
+                    columns={failedSettlementColumns}
+                    data={selectedDeclaration.failedSettlements}
+                    rowKey="id"
+                    hoverable
+                    striped
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
               <div className="p-5 border-b border-gray-100 flex items-center justify-between">
