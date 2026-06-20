@@ -68,6 +68,11 @@ export interface MatchResult {
   status: 'pending' | 'accepted' | 'rejected';
 }
 
+export interface ContractSection {
+  title: string;
+  content: string;
+}
+
 export interface Contract {
   id: string;
   jobId: string;
@@ -202,10 +207,94 @@ export interface TaxDeclaration {
   id: string;
   period: string;
   companyId: string;
+  workerIds: string[];
+  settlementIds: string[];
+  invoiceIds: string[];
+  payoutIds: string[];
+  totalTaxableIncome: number;
+  totalDeductions: number;
+  totalTax: number;
+  declarationCount: number;
+  status: 'draft' | 'pending' | 'declared' | 'filed' | 'failed';
+  declaredAt?: string;
+  filedAt?: string;
+  declarationNo?: string;
+  failReason?: string;
+}
+
+export interface WorkerTaxDetail {
   workerId: string;
-  settlementId: string;
+  workerName?: string;
+  idCardMasked: string;
+  totalIncome: number;
+  deduction: number;
   taxableIncome: number;
+  taxRate: string;
   taxAmount: number;
-  declaredAt: string;
+}
+
+export interface InvoiceSummary {
+  count: number;
+  totalAmount: number;
+  totalTax: number;
+}
+
+export interface PayoutSummary {
+  count: number;
+  totalAmount: number;
+  successCount: number;
+  failCount: number;
+}
+
+export interface ConsistencyCheck {
+  settlementCount: number;
+  invoiceCount: number;
+  payoutCount: number;
+  settlementTotal: number;
+  payoutTotal: number;
+  isConsistent: boolean;
+}
+
+export interface TaxDeclarationWithDetails extends TaxDeclaration {
+  companyName?: string;
+  declarations: WorkerTaxDetail[];
+  invoiceSummary: InvoiceSummary;
+  payoutSummary: PayoutSummary;
+  consistencyCheck: ConsistencyCheck;
+}
+
+export interface SettlementSummary {
+  id: string;
+  workerName?: string;
+  totalBeforeTax: number;
+  taxAmount: number;
+  netAmount: number;
   status: string;
+  confirmedAt?: string;
+}
+
+export interface TaxDeclarationFullDetail extends TaxDeclarationWithDetails {
+  settlements: SettlementSummary[];
+  invoices: Invoice[];
+  payouts: Payout[];
+}
+
+export interface TaxCertificate {
+  declarationId: string;
+  declarationNo: string;
+  period: string;
+  companyName: string;
+  companyLicenseNo: string;
+  totalTaxableIncome: number;
+  totalTax: number;
+  declarationCount: number;
+  declaredAt: string;
+  filedAt: string;
+  issuedAt: string;
+  items: Array<{
+    workerName: string;
+    idCardMasked: string;
+    taxableIncome: number;
+    taxAmount: number;
+  }>;
 }

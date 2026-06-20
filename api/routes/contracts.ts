@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { contracts, generateId, findById } from '../data/mockData.js';
+import { contracts, jobPosts, users, companies, generateId, findById } from '../data/mockData.js';
 import { getUserFromToken } from './auth.js';
-import type { Contract } from '../../shared/types.js';
+import type { Contract, ContractSection } from '../../shared/types.js';
 
 const router = Router();
 
@@ -27,10 +27,33 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
     const end = start + sizeNum;
     const paginated = filtered.slice(start, end);
 
+    const enriched = paginated.map((c) => {
+      const job = findById(jobPosts, c.jobId);
+      const worker = findById(users, c.workerId);
+      const company = findById(companies, c.companyId);
+      
+      return {
+        ...c,
+        jobTitle: job?.title,
+        workerName: worker?.name,
+        companyName: company?.name,
+        type: job?.type,
+        rate: job?.type === 'hourly' ? job.hourlyRate : job?.pieceRate,
+        workLocation: job?.workLocation,
+        startDate: job?.startDate,
+        endDate: job?.endDate,
+        signatures: [
+          { party: 'company' as const, signed: c.companySigned, signer: company?.name },
+          { party: 'worker' as const, signed: c.workerSigned, signer: worker?.name },
+          { party: 'platform' as const, signed: c.platformSigned, signer: '平台' },
+        ],
+      };
+    });
+
     res.status(200).json({
       success: true,
       data: {
-        list: paginated,
+        list: enriched,
         total: filtered.length,
         page: pageNum,
         pageSize: sizeNum,
@@ -55,9 +78,50 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const job = findById(jobPosts, contract.jobId);
+    const worker = findById(users, contract.workerId);
+    const company = findById(companies, contract.companyId);
+
+    const sectionRegex = /【第(\d+)条\s+([^】]+)】\s*([\s\S]*?)(?=(?:【第\d+条|$))/g;
+    const sections: ContractSection[] = [];
+    let match;
+
+    while ((match = sectionRegex.exec(contract.content)) !== null) {
+      sections.push({
+        title: `第${match[1]}条 ${match[2]}`,
+        content: match[3].trim(),
+      });
+    }
+
+    if (sections.length === 0) {
+      sections.push({
+        title: '协议内容',
+        content: contract.content,
+      });
+    }
+
+    const enrichedContract = {
+      ...contract,
+      jobTitle: job?.title,
+      workerName: worker?.name,
+      companyName: company?.name,
+      type: job?.type,
+      rate: job?.type === 'hourly' ? job.hourlyRate : job?.pieceRate,
+      workLocation: job?.workLocation,
+      startDate: job?.startDate,
+      endDate: job?.endDate,
+      acceptanceCriteria: job?.acceptanceCriteria,
+      sections,
+      signatures: [
+        { party: 'company' as const, signed: contract.companySigned, signer: company?.name, signedAt: contract.companySigned ? contract.signedAt : undefined },
+        { party: 'worker' as const, signed: contract.workerSigned, signer: worker?.name, signedAt: contract.workerSigned ? contract.signedAt : undefined },
+        { party: 'platform' as const, signed: contract.platformSigned, signer: '平台', signedAt: contract.platformSigned ? contract.signedAt : undefined },
+      ],
+    };
+
     res.status(200).json({
       success: true,
-      data: contract,
+      data: enrichedContract,
     });
   } catch (error) {
     res.status(500).json({
@@ -142,7 +206,11 @@ router.post('/:id/sign', async (req: Request, res: Response): Promise<void> => {
 
     res.status(200).json({
       success: true,
-      data: contract,
+      data: {
+        ...contract,
+        signStatus: contract.status,
+        signedAt: contract.signedAt,
+      },
       message: `${party === 'company' ? '企业方' : party === 'worker' ? '劳动者' : '平台方'}签署成功`,
     });
   } catch (error) {

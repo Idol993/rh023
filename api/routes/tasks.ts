@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { tasks, jobPosts, generateId, findById } from '../data/mockData.js';
+import { tasks, jobPosts, generateId, findById, riskFlags } from '../data/mockData.js';
 import { getUserFromToken } from './auth.js';
-import type { CheckIn, TaskSubmission } from '../../shared/types.js';
+import type { CheckIn, TaskSubmission, RiskFlag } from '../../shared/types.js';
 
 const router = Router();
 
@@ -75,6 +75,18 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
 router.post('/:id/checkin', async (req: Request, res: Response): Promise<void> => {
   try {
     const user = getUserFromToken(req);
@@ -112,34 +124,158 @@ router.post('/:id/checkin', async (req: Request, res: Response): Promise<void> =
     }
 
     const job = findById(jobPosts, task.jobId);
-    let locationValid = false;
+    let distanceKm = 0;
+    let locationValid = true;
+
     if (job) {
-      const R = 6371000;
-      const phi1 = (job.workLocation.lat * Math.PI) / 180;
-      const phi2 = (location.lat * Math.PI) / 180;
-      const dphi = ((location.lat - job.workLocation.lat) * Math.PI) / 180;
-      const dlambda = ((location.lng - job.workLocation.lng) * Math.PI) / 180;
-      const a =
-        Math.sin(dphi / 2) ** 2 +
-        Math.cos(phi1) * Math.cos(phi2) * Math.sin(dlambda / 2) ** 2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      const distance = R * c;
-      locationValid = distance <= job.workLocation.radius;
-    } else {
-      locationValid = true;
+      distanceKm = calculateDistance(
+        job.workLocation.lat,
+        job.workLocation.lng,
+        location.lat,
+        location.lng
+      );
+      const radiusKm = job.workLocation.radius / 1000;
+      locationValid = distanceKm <= radiusKm;
     }
+
+    const now = new Date();
+    const timestamp = now.toISOString();
 
     const checkIn: CheckIn = {
       id: generateId('cin'),
       taskId: id,
       workerId: user.id,
       type: type as 'checkin' | 'checkout',
-      timestamp: new Date().toISOString(),
+      timestamp,
       location: { lat: location.lat, lng: location.lng },
       locationValid,
       photoUrl: photoUrl || undefined,
       photoValid: !!photoUrl,
     };
+
+    const triggeredRiskFlagIds: string[] = [];
+    let locationAbnormal = false;
+    let locationRiskFlagId: string | undefined;
+
+    if (!locationValid && job) {
+      const radiusKm = job.workLocation.radius / 1000;
+      const riskFlag: RiskFlag = {
+        id: generateId('RSK'),
+        taskId: id,
+        workerId: task.workerId,
+        type: 'location_abnormal',
+        level: 'high',
+        description: `打卡位置异常，实际打卡地点与工作地点相距${distanceKm.toFixed(2)}km，超出允许范围${radiusKm.toFixed(2)}km`,
+        triggeredAt: timestamp,
+        status: 'pending',
+      };
+      riskFlags.push(riskFlag);
+      if (!task.riskFlags.includes(riskFlag.id)) {
+        task.riskFlags.push(riskFlag.id);
+      }
+      if (task.status === 'in_progress') {
+        task.status = 'abnormal';
+      }
+      triggeredRiskFlagIds.push(riskFlag.id);
+      locationAbnormal = true;
+      locationRiskFlagId = riskFlag.id;
+    }
+
+    const today = now.toISOString().split('T')[0];
+    const workerTodayCheckIns: CheckIn[] = [];
+    for (const t of tasks) {
+      if (t.workerId === user.id) {
+        for (const ci of t.checkIns) {
+          if (ci.timestamp.split('T')[0] === today) {
+            workerTodayCheckIns.push(ci);
+          }
+        }
+      }
+    }
+    workerTodayCheckIns.push(checkIn);
+
+    let totalMinutes = 0;
+    const checkinsByDay: Record<string, CheckIn[]> = {};
+    for (const ci of workerTodayCheckIns) {
+      const day = ci.timestamp.split('T')[0];
+      if (!checkinsByDay[day]) checkinsByDay[day] = [];
+      checkinsByDay[day].push(ci);
+    }
+    for (const day of Object.keys(checkinsByDay)) {
+      const dayCheckins = [...checkinsByDay[day]].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      let lastCheckin: CheckIn | null = null;
+      for (const ci of dayCheckins) {
+        if (ci.type === 'checkin') {
+          lastCheckin = ci;
+        } else if (ci.type === 'checkout' && lastCheckin) {
+          const diffMs = new Date(ci.timestamp).getTime() - new Date(lastCheckin.timestamp).getTime();
+          totalMinutes += diffMs / (1000 * 60);
+          lastCheckin = null;
+        }
+      }
+    }
+    const totalHours = totalMinutes / 60;
+    if (totalHours > 12) {
+      const existingSuspicious = riskFlags.find(
+        (r) => r.type === 'suspicious_hours' && r.workerId === user.id && r.triggeredAt.split('T')[0] === today
+      );
+      if (!existingSuspicious) {
+        const riskFlag: RiskFlag = {
+          id: generateId('RSK'),
+          taskId: id,
+          workerId: task.workerId,
+          type: 'suspicious_hours',
+          level: 'high',
+          description: '异常工时，当日累计工时超过12小时上限',
+          triggeredAt: timestamp,
+          status: 'pending',
+        };
+        riskFlags.push(riskFlag);
+        if (!task.riskFlags.includes(riskFlag.id)) {
+          task.riskFlags.push(riskFlag.id);
+        }
+        triggeredRiskFlagIds.push(riskFlag.id);
+      }
+    }
+
+    if (photoUrl) {
+      let foundDuplicate = false;
+      for (const t of tasks) {
+        if (t.workerId === user.id) {
+          for (const ci of t.checkIns) {
+            if (ci.photoUrl === photoUrl && ci.id !== checkIn.id) {
+              foundDuplicate = true;
+              break;
+            }
+          }
+        }
+        if (foundDuplicate) break;
+      }
+      if (foundDuplicate) {
+        const existingDuplicate = riskFlags.find(
+          (r) => r.type === 'photo_duplicate' && r.workerId === user.id && r.taskId === id
+        );
+        if (!existingDuplicate) {
+          const riskFlag: RiskFlag = {
+            id: generateId('RSK'),
+            taskId: id,
+            workerId: task.workerId,
+            type: 'photo_duplicate',
+            level: 'medium',
+            description: '打卡照片重复，疑似使用历史照片进行打卡',
+            triggeredAt: timestamp,
+            status: 'pending',
+          };
+          riskFlags.push(riskFlag);
+          if (!task.riskFlags.includes(riskFlag.id)) {
+            task.riskFlags.push(riskFlag.id);
+          }
+          triggeredRiskFlagIds.push(riskFlag.id);
+        }
+      }
+    }
 
     task.checkIns.push(checkIn);
 
@@ -147,15 +283,15 @@ router.post('/:id/checkin', async (req: Request, res: Response): Promise<void> =
       task.status = 'in_progress';
     }
 
-    if (!locationValid) {
-      const riskFlagId = generateId('rf');
-      task.riskFlags.push(riskFlagId);
-    }
-
     res.status(201).json({
       success: true,
-      data: checkIn,
-      message: `${type === 'checkin' ? '上班' : '下班'}打卡成功${locationValid ? '' : '（打卡位置超出范围，已标记风险）'}`,
+      data: {
+        checkIn,
+        locationAbnormal,
+        riskFlagId: locationRiskFlagId,
+        triggeredRiskFlagIds,
+      },
+      message: `${type === 'checkin' ? '上班' : '下班'}打卡成功${locationValid ? '' : '（打卡位置超出范围，已触发风控预警）'}${triggeredRiskFlagIds.length > 0 && locationValid ? '（已触发风控预警，请留意）' : ''}`,
     });
   } catch (error) {
     res.status(500).json({

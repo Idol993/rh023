@@ -87,6 +87,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 router.get('/calculate/:taskId', async (req: Request, res: Response): Promise<void> => {
   try {
     const { taskId } = req.params;
+    const { actualHours, pieceCount } = req.query;
     const task = findById(tasks, taskId);
 
     if (!task) {
@@ -100,18 +101,25 @@ router.get('/calculate/:taskId', async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    const effectiveHours = actualHours !== undefined
+      ? parseFloat(String(actualHours))
+      : task.actualHours;
+    const effectivePieceCount = pieceCount !== undefined
+      ? parseFloat(String(pieceCount))
+      : task.pieceCount;
+
     let baseAmount = 0;
-    if (job.type === 'hourly' && task.actualHours) {
-      baseAmount = task.actualHours * (job.hourlyRate || 0);
-    } else if (job.type === 'piecework' && task.pieceCount) {
-      baseAmount = task.pieceCount * (job.pieceRate || 0);
+    if (job.type === 'hourly' && effectiveHours) {
+      baseAmount = effectiveHours * (job.hourlyRate || 0);
+    } else if (job.type === 'piecework' && effectivePieceCount) {
+      baseAmount = effectivePieceCount * (job.pieceRate || 0);
     }
     baseAmount = Math.round(baseAmount * 100) / 100;
 
     const bonuses: SettlementItem[] = [];
     const deductions: SettlementItem[] = [];
 
-    if (job.type === 'hourly' && task.actualHours && task.actualHours >= 40) {
+    if (job.type === 'hourly' && effectiveHours && effectiveHours >= 40) {
       bonuses.push({
         id: generateId('sitem'),
         name: '全勤奖',
@@ -139,38 +147,24 @@ router.get('/calculate/:taskId', async (req: Request, res: Response): Promise<vo
     const totalDeductionsWithTax = deductions.reduce((sum, d) => sum + d.amount, 0);
     const netAmount = Math.round((totalBeforeTax - totalDeductionsWithTax) * 100) / 100;
 
+    const settlement: Settlement = {
+      id: `calc_${taskId}_${Date.now()}`,
+      taskId,
+      workerId: task.workerId,
+      companyId: job.companyId,
+      baseAmount,
+      bonuses,
+      deductions,
+      totalBeforeTax,
+      taxAmount: taxRounded,
+      netAmount,
+      taxBracket: bracket,
+      status: 'pending',
+    };
+
     res.status(200).json({
       success: true,
-      data: {
-        taskId,
-        workerId: task.workerId,
-        companyId: job.companyId,
-        baseAmount,
-        baseDetail: {
-          type: job.type,
-          hours: task.actualHours || 0,
-          hourlyRate: job.hourlyRate || 0,
-          pieceCount: task.pieceCount || 0,
-          pieceRate: job.pieceRate || 0,
-        },
-        bonuses,
-        deductions,
-        totalBeforeTax,
-        taxableIncome: Math.round(taxableIncome * 100) / 100,
-        taxAmount: taxRounded,
-        taxBracket: bracket,
-        taxFormula: {
-          rule: '劳务报酬个税计算规则',
-          details: [
-            '≤800元：免税',
-            '800-4000元：(收入-800)×20%',
-            '4000-20000元：收入×(1-20%)×20%',
-            '20000-50000元：收入×(1-20%)×30%-2000（加成）',
-            '>50000元：收入×(1-20%)×40%-7000（加成）',
-          ],
-        },
-        netAmount,
-      },
+      data: settlement,
     });
   } catch (error) {
     res.status(500).json({

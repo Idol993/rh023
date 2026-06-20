@@ -47,7 +47,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-router.post('/:id/download', async (req: Request, res: Response): Promise<void> => {
+router.get('/:id/download', async (req: Request, res: Response): Promise<void> => {
   try {
     const user = getUserFromToken(req);
     if (!user) {
@@ -82,14 +82,9 @@ router.post('/:id/download', async (req: Request, res: Response): Promise<void> 
     res.status(200).json({
       success: true,
       data: {
-        invoiceId: id,
-        invoiceNo: invoice.invoiceNo,
-        fileName: `发票_${invoice.invoiceNo}.pdf`,
-        fileSize: `${Math.round(Math.random() * 500 + 100)}KB`,
         downloadUrl,
-        expiresIn: 3600,
+        invoiceNo: invoice.invoiceNo,
       },
-      message: '发票下载链接已生成（1小时内有效）',
     });
   } catch (error) {
     res.status(500).json({

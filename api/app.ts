@@ -21,6 +21,7 @@ import invoicesRoutes from './routes/invoices.js';
 import riskRoutes from './routes/risk.js';
 import disputesRoutes from './routes/disputes.js';
 import dashboardRoutes from './routes/dashboard.js';
+import taxRoutes from './routes/tax.js';
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url)
@@ -48,6 +49,7 @@ app.use('/api/invoices', invoicesRoutes);
 app.use('/api/risk', riskRoutes);
 app.use('/api/disputes', disputesRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/tax', taxRoutes);
 
 /**
  * health

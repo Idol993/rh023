@@ -244,7 +244,7 @@ export function Header({ onToggleSidebar }: HeaderProps) {
                 type="button"
                 onClick={() => {
                   setUserMenuOpen(false);
-                  navigate('/profile');
+                  navigate('/profile/me');
                 }}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
               >

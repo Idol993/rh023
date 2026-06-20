@@ -101,6 +101,11 @@ export default function App() {
             <Route path="me" element={<Me />} />
           </Route>
 
+          <Route path="tasks/checkin" element={<CheckIn />} />
+          <Route path="tasks/submit" element={<TaskSubmit />} />
+          <Route path="jobs/match" element={<JobMatch />} />
+          <Route path="contract/sign/:id" element={<ContractSign />} />
+
           <Route path="*" element={<Overview />} />
         </Route>
 

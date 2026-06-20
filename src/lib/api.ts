@@ -33,7 +33,13 @@ api.interceptors.request.use(
 );
 
 api.interceptors.response.use(
-  (response: AxiosResponse) => response.data,
+  (response: AxiosResponse) => {
+    const data = response.data;
+    if (data && typeof data === 'object' && data.success !== undefined && 'data' in data) {
+      return data.data;
+    }
+    return data;
+  },
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       useAuthStore.getState().logout();
@@ -87,16 +93,21 @@ export const jobsApi = {
   match: (jobId: string) =>
     api.get<unknown, MatchResult[]>(`/jobs/${jobId}/match`),
   apply: (jobId: string) =>
-    api.post<unknown, { success: boolean }>(`/jobs/${jobId}/apply`),
+    api.post<unknown, MatchResult>(`/jobs/${jobId}/apply`),
 };
+
+export interface ContractSignResult extends Contract {
+  signStatus: Contract['status'];
+  signedAt?: string;
+}
 
 export const contractsApi = {
   list: (params?: ListParams) =>
     api.get<unknown, ListResponse<Contract>>('/contracts', { params }),
   get: (id: string) =>
     api.get<unknown, Contract>(`/contracts/${id}`),
-  sign: (id: string, role: 'company' | 'worker' | 'platform') =>
-    api.post<unknown, Contract>(`/contracts/${id}/sign`, { role }),
+  sign: (id: string, party: 'company' | 'worker' | 'platform') =>
+    api.post<unknown, ContractSignResult>(`/contracts/${id}/sign`, { party }),
   verify: (id: string) =>
     api.get<unknown, { valid: boolean; hash: string }>(`/contracts/${id}/verify`),
 };
@@ -131,19 +142,16 @@ export const tasksApi = {
     api.post<unknown, Task>(`/tasks/${taskId}/review`, data),
 };
 
-export interface CalculateSettlementPayload {
-  taskId: string;
+export interface CalculateSettlementParams {
   actualHours?: number;
   pieceCount?: number;
-  deductions?: Settlement['deductions'];
-  bonuses?: Settlement['bonuses'];
 }
 
 export const settlementsApi = {
   list: (params?: ListParams) =>
     api.get<unknown, ListResponse<Settlement>>('/settlements', { params }),
-  calculate: (data: CalculateSettlementPayload) =>
-    api.post<unknown, Settlement>('/settlements/calculate', data),
+  calculate: (taskId: string, params?: CalculateSettlementParams) =>
+    api.get<unknown, Settlement>(`/settlements/calculate/${taskId}`, { params }),
   confirm: (id: string) =>
     api.post<unknown, Settlement>(`/settlements/${id}/confirm`),
 };
@@ -161,11 +169,16 @@ export const payoutsApi = {
     api.post<unknown, Payout>(`/payouts/${id}/retry`),
 };
 
+export interface InvoiceDownloadResult {
+  downloadUrl: string;
+  invoiceNo: string;
+}
+
 export const invoicesApi = {
   list: (params?: ListParams) =>
     api.get<unknown, ListResponse<Invoice>>('/invoices', { params }),
   download: (id: string) =>
-    api.get<unknown, { url: string }>(`/invoices/${id}/download`),
+    api.get<unknown, InvoiceDownloadResult>(`/invoices/${id}/download`),
 };
 
 export const taxApi = {
@@ -174,8 +187,9 @@ export const taxApi = {
 };
 
 export interface ReviewWarningPayload {
-  status: 'reviewed' | 'cleared';
+  action: 'approve' | 'reject' | 'clear';
   comment: string;
+  reviewerId?: string;
 }
 
 export const riskApi = {
